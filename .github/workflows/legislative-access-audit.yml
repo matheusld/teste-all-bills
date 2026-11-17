@@ -10,8 +10,14 @@ permissions:
 jobs:
   anonymous-access:
     if: github.event.repository.private == false
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    env:
+      AUDIT_HEADLESS: 'false'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,9 +30,16 @@ jobs:
           python -m pip install playwright==1.56.0 pypdf==6.1.3
           python -m playwright install --with-deps chromium
       - name: Test fresh anonymous browser and FTP access
-        run: python legislation-audit/runner.py
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a python legislation-audit/runner.py
+          else
+            python legislation-audit/runner.py
+          fi
       - name: Publish compact audit result to job log
         if: always()
+        shell: bash
         run: |
           if [ -f audit-results/result.json ]; then cat audit-results/result.json; fi
 

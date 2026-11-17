@@ -34,6 +34,7 @@ RESULT = {
     'credentials': 'No state accounts, state API keys, or saved browser state supplied',
     'checks': [],
 }
+BROWSER_DIAGNOSTIC = None
 
 
 def record(name, fn):
@@ -44,6 +45,11 @@ def record(name, fn):
         row['pass'] = True
     except Exception as exc:
         row.update({'pass': False, 'error': str(exc)[:4000]})
+        if name.startswith('IN ') and BROWSER_DIAGNOSTIC:
+            try:
+                row['browser_diagnostic'] = BROWSER_DIAGNOSTIC()
+            except Exception as diagnostic_error:
+                row['diagnostic_error'] = str(diagnostic_error)[:500]
     row['seconds'] = round(time.monotonic() - start, 2)
     RESULT['checks'].append(row)
     print('CHECK ' + json.dumps(row), flush=True)
@@ -58,11 +64,12 @@ def curl(url, extra=()):
     # A separate process, with no browser cookies, HTTP authentication or API key.
     target = OUT / 'temporary-response'
     proc = subprocess.run([
-        'curl', '--silent', '--show-error', '--location', '--connect-timeout', '20',
-        '--max-time', '65', '--max-filesize', '20000000',
+        'curl', '--silent', '--show-error', '--location', '--ipv4', '--connect-timeout', '20',
+        '--max-time', '35', '--retry', '2', '--retry-delay', '3', '--retry-all-errors',
+        '--retry-max-time', '90', '--max-filesize', '20000000',
         '--user-agent', 'PublicLegislationAccessAudit/1.0',
         '--output', str(target), '--write-out', '%{http_code}\n%{content_type}\n%{url_effective}',
-        *extra, url], capture_output=True, text=True, timeout=70)
+        *extra, url], capture_output=True, text=True, timeout=100)
     fields = proc.stdout.strip().split('\n')
     data = target.read_bytes() if target.exists() else b''
     target.unlink(missing_ok=True)
@@ -109,6 +116,37 @@ def tx_ftp():
     return {**meta, 'sessions_observed': sessions, 'samples': samples}
 
 
+def tx_access():
+    try:
+        return {'route': 'anonymous FTP', **tx_ftp()}
+    except Exception as ftp_error:
+        # Official public reports and tlodocs serve the same introduced documents.
+        # Retain the failed FTP result; do not present the fallback as FTP success.
+        inventories = []
+        for session in ['90R', '891', '892', '89R']:
+            for chamber in ['house', 'senate']:
+                url = f'https://capitol.texas.gov/Reports/Report.aspx?LegSess={session}&ID={chamber}filed'
+                data, meta = curl(url)
+                html = data.decode('utf-8', errors='replace')
+                ids = sorted(set(re.findall(r'Bill=([HS][A-Z]*\d+)', html, re.I)))
+                assert len(ids) > 1 and '</html>' in html.lower(), 'Missing complete report body'
+                total = re.search(r'Number of Bills:\s*([\d,]+)', html, re.I)
+                assert total and len(ids) == int(total.group(1).replace(',', '')), 'Report total does not reconcile'
+                inventories.append({**meta, 'session': session, 'chamber': chamber,
+                                    'unique_measure_links': len(ids),
+                                    'source_total_reconciled': True,
+                                    'ordinary_bill_links': sum(bool(re.match(r'^[HS]B\d+$', x, re.I)) for x in ids)})
+        data, house = curl('https://capitol.texas.gov/tlodocs/90R/billtext/html/HB00101I.htm')
+        text = re.sub('<[^>]+>', ' ', data.decode(errors='replace'))
+        assert len(text) > 1000 and re.search(r'BE IT ENACTED', text, re.I), 'Invalid introduced HTML'
+        house.update({'text_chars': len(text), 'introduced_suffix_verified': True})
+        data, senate = curl('https://capitol.texas.gov/tlodocs/90R/billtext/pdf/SB00031I.pdf')
+        senate.update(pdf(data, r'S\.B\.\s*No\.\s*31\b'))
+        return {'route': 'official HTTPS fallback', 'ftp_success': False,
+                'ftp_error': str(ftp_error)[:1500], 'inventories': inventories,
+                'samples': [house, senate]}
+
+
 def virginia_csv():
     data, meta = curl('https://lis.blob.core.windows.net/lisfiles/20261/BILLS.CSV')
     rows = list(csv.DictReader(io.StringIO(data.decode('utf-8-sig', errors='replace'))))
@@ -143,13 +181,33 @@ def federal_xml():
 
 
 def browser_checks():
+    global BROWSER_DIAGNOSTIC
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
-        RESULT['browser'] = {'engine': 'chromium', 'version': browser.version, 'headless': True,
+        headless = os.environ.get('AUDIT_HEADLESS', 'true') == 'true'
+        browser = pw.chromium.launch(headless=headless)
+        RESULT['browser'] = {'engine': 'chromium', 'version': browser.version, 'headless': headless,
                              'fresh_context': True, 'saved_profile': False}
         context = browser.new_context(accept_downloads=True)
         page = context.new_page()
         page.set_default_timeout(45000)
+        script_responses, page_errors, failed_requests = [], [], []
+        def observe_response(response):
+            parsed = urlparse(response.url)
+            if parsed.hostname == 'iga.in.gov' and (parsed.path.endswith('.js') or response.status >= 400):
+                script_responses.append({'host': parsed.hostname, 'path': parsed.path,
+                                         'status': response.status,
+                                         'content_type': response.headers.get('content-type')})
+        page.on('response', observe_response)
+        page.on('pageerror', lambda error: page_errors.append(str(error)[:500]))
+        page.on('requestfailed', lambda request: failed_requests.append({
+            'host': urlparse(request.url).hostname, 'path': urlparse(request.url).path,
+            'failure': request.failure}))
+        def browser_diagnostic():
+            return {'url': page.url, 'title': page.title(),
+                    'body_text': page.locator('body').inner_text(timeout=5000)[:1200],
+                    'script_responses': script_responses[-12:], 'page_errors': page_errors[-6:],
+                    'failed_requests': failed_requests[-12:]}
+        BROWSER_DIAGNOSTIC = browser_diagnostic
 
         def indiana_inventory():
             url = 'https://iga.in.gov/legislative/2026/bills'
@@ -220,7 +278,7 @@ def browser_checks():
 
 
 record('CT anonymous FTP inventory', ct_ftp)
-record('TX anonymous FTP inventory and introduced text', tx_ftp)
+record('TX anonymous discovery and introduced text (FTP or official HTTPS)', tx_access)
 record('VA anonymous complete CSV', virginia_csv)
 record('VA complete introduced budget PDF fallback', virginia_budget)
 record('CA anonymous ZIP range transport', california_range)
