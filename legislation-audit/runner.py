@@ -123,6 +123,15 @@ def california_range():
     return {**meta, 'scope': 'Cloud range transport only; full XML extraction covered by separate audit'}
 
 
+def virginia_budget():
+    data, meta = curl('https://budget.lis.virginia.gov/get/budget/5163/HB30/')
+    parsed = pdf(data, r'THE BUDGET BILL')
+    assert parsed['pages'] >= 685 and parsed['text_chars'] > 2000000, 'Incomplete budget text'
+    return {**meta, **parsed, 'bill': 'HB30',
+            'source': 'Official budget portal introduced PDF; carried into 2026 Special Session I',
+            'reason_for_alternate_route': 'LIS PDF link is broken and LIS HTML text is incomplete'}
+
+
 def federal_xml():
     import xml.etree.ElementTree as ET
     url = 'https://www.govinfo.gov/bulkdata/BILLS/119/2/hr/BILLS-119hr11033ih.xml'
@@ -213,6 +222,7 @@ def browser_checks():
 record('CT anonymous FTP inventory', ct_ftp)
 record('TX anonymous FTP inventory and introduced text', tx_ftp)
 record('VA anonymous complete CSV', virginia_csv)
+record('VA complete introduced budget PDF fallback', virginia_budget)
 record('CA anonymous ZIP range transport', california_range)
 record('Federal introduced XML control', federal_xml)
 try:
