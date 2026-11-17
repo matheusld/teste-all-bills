@@ -8,9 +8,10 @@ Files in the chosen repository:
   legislation-audit/runner.py
   .github/workflows/legislative-access-audit.yml
 
-The workflow runs only on pushes to audit/legislative-cloud-2026-11-16,
-or a manual workflow dispatch where available. The default branch remains
-unchanged when using an isolated audit branch.
+The workflow runs on relevant pushes to main or the isolated audit branch,
+on a manual workflow dispatch, or when the repository becomes public.
+A job guard skips execution while the repository is private, so private
+runner billing cannot be incurred by this audit. There is no schedule.
 
 Checks:
   CT: anonymous FTP CSV inventory
