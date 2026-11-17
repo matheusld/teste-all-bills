@@ -232,25 +232,38 @@ def browser_checks():
         def indiana_pdf(chamber, number, code, pattern):
             detail = f'https://iga.in.gov/legislative/2026/bills/{chamber}/{number}/details'
             page.goto(detail, wait_until='domcontentloaded', timeout=65000)
-            # Use the public UI's versions expander and its introduced-document link.
-            page.get_by_text('Bill Versions', exact=True).click()
-            introduced = page.get_by_text(re.compile(r'1\.\s+Introduced .* Bill')).first
-            introduced.click()
+            page.get_by_role('heading', name=f'{chamber.title()} Bill {number}', exact=True).wait_for()
+            # The menu is rearranged as details load; wait before clicking its parent button.
+            page.wait_for_load_state('networkidle', timeout=20000)
+            ui_error = None
             locator = page.locator(f'a[href*="/{code}/{code}.01.INTR.pdf"]').first
-            locator.wait_for(state='attached')
-            url = locator.get_attribute('href')
+            try:
+                page.get_by_role('button', name='Bill Versions', exact=True).click()
+                introduced = page.get_by_role('button', name=re.compile(r'^1\.\s+Introduced .* Bill'))
+                introduced.wait_for(timeout=12000)
+                introduced.click()
+                locator.wait_for(state='attached', timeout=12000)
+                url = locator.get_attribute('href')
+                source = 'Introduced version link discovered in the public bill page'
+            except Exception as exc:
+                # These exact public original links were observed in the preceding browser audit.
+                # Retain the UI failure separately; validate the actual document bytes and identity.
+                ui_error = str(exc)[:1200]
+                url = f'https://iga.in.gov/pdf-documents/124/2026/{chamber}/bills/{code}/{code}.01.INTR.pdf'
+                source = 'Previously observed official introduced-version hyperlink; direct anonymous browser-context retrieval'
             if url.startswith('/'):
                 url = 'https://iga.in.gov' + url
             # The browser's anonymous request context follows the link with the same site context.
             response = context.request.get(url, timeout=65000)
             data = response.body()
-            if not data.startswith(b'%PDF-'):
+            if not data.startswith(b'%PDF-') and not ui_error:
                 # Some hosts distinguish ordinary requests from a browser link download.
                 with page.expect_download(timeout=65000) as download:
                     locator.click()
                 data = pathlib.Path(download.value.path()).read_bytes()
             return {'detail_url': detail, 'text_url': url, 'http_status': response.status,
-                    'version': '01.INTR', **pdf(data, pattern)}
+                    'version': '01.INTR', 'link_source': source, 'version_menu_error': ui_error,
+                    **pdf(data, pattern)}
 
         def virginia_browser(bill, pattern, session='20261'):
             url = f'https://lis.virginia.gov/bill-details/{session}/{bill}/text/{bill}'
