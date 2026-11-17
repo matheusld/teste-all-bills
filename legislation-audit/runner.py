@@ -185,8 +185,8 @@ def browser_checks():
             return {'detail_url': detail, 'text_url': url, 'http_status': response.status,
                     'version': '01.INTR', **pdf(data, pattern)}
 
-        def virginia_browser(bill, pattern):
-            url = f'https://lis.virginia.gov/bill-details/20261/{bill}/text/{bill}'
+        def virginia_browser(bill, pattern, session='20261'):
+            url = f'https://lis.virginia.gov/bill-details/{session}/{bill}/text/{bill}'
             page.goto(url, wait_until='domcontentloaded', timeout=65000)
             link = page.get_by_role('link', name='PDF', exact=True)
             link.wait_for()
@@ -203,6 +203,9 @@ def browser_checks():
         record('IN Senate introduced PDF', lambda: indiana_pdf('senate', 1, 'SB0001', r'SENATE BILL No\.\s*1\b'))
         record('VA House public browser and PDF', lambda: virginia_browser('HB1', r'HOUSE BILL NO\.\s*1\b'))
         record('VA Senate public browser and PDF', lambda: virginia_browser('SB1', r'SENATE BILL NO\.\s*1\b'))
+        record('VA special-session Senate introduced PDF', lambda: virginia_browser('SB4001', r'SENATE BILL NO\.\s*4001\b', '20262'))
+        record('VA 2027 House prefile introduced PDF', lambda: virginia_browser('HB1532', r'HOUSE BILL NO\.\s*1532\b', '20271'))
+        record('VA 2027 Senate prefile introduced PDF', lambda: virginia_browser('SB837', r'SENATE BILL NO\.\s*837\b', '20271'))
         context.close()
         browser.close()
 
